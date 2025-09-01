@@ -47,3 +47,67 @@ def list_orders():
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
 
+from fastapi import FastAPI, HTTPException
+import psycopg2, os
+from psycopg2.extras import RealDictCursor
+
+app = FastAPI()
+
+def get_db():
+    return psycopg2.connect(
+        os.environ["DATABASE_URL"],
+        sslmode="require",
+        cursor_factory=RealDictCursor
+    )
+
+# --- /markets ---
+@app.get("/markets")
+def get_markets():
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT * FROM markets;")
+        return cur.fetchall()
+
+# --- /balances/{user_id} ---
+@app.get("/balances/{user_id}")
+def get_balances(user_id: int):
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT asset, amount FROM balances WHERE user_id=%s;", (user_id,))
+        balances = cur.fetchall()
+        if not balances:
+            raise HTTPException(status_code=404, detail="User not found or no balances")
+        return balances
+
+# --- /trades ---
+@app.post("/trades")
+def place_trade(order: dict):
+    user_id = order["user_id"]
+    market  = order["market"]
+    side    = order["side"]
+    price   = order["price"]
+    qty     = order["qty"]
+
+    with get_db() as conn, conn.cursor() as cur:
+        # insert order
+        cur.execute("""
+            INSERT INTO orders (user_id, market, side, price, qty)
+            VALUES (%s, %s, %s, %s, %s) RETURNING id;
+        """, (user_id, market, side, price, qty))
+        order_id = cur.fetchone()["id"]
+
+        # simulate trade (skeleton only)
+        cur.execute("""
+            INSERT INTO trades (market, price, qty, side, user_id)
+            VALUES (%s, %s, %s, %s, %s);
+        """, (market, price, qty, side, user_id))
+
+        # update balances (basic skeleton)
+        if side == "buy":
+            cur.execute("UPDATE balances SET amount = amount - %s WHERE user_id=%s AND asset='USD';", (price*qty, user_id))
+            cur.execute("UPDATE balances SET amount = amount + %s WHERE user_id=%s AND asset='BTC';", (qty, user_id))
+        elif side == "sell":
+            cur.execute("UPDATE balances SET amount = amount - %s WHERE user_id=%s AND asset='BTC';", (qty, user_id))
+            cur.execute("UPDATE balances SET amount = amount + %s WHERE user_id=%s AND asset='USD';", (price*qty, user_id))
+
+        conn.commit()
+        return {"order_id": order_id, "status": "ok"}
+
